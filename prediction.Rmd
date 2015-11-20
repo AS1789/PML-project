@@ -1,0 +1,122 @@
+---
+title: "Practical Machine Learning Assignment"
+author: "AS1789"
+date: "Saturday, November 14, 2015"
+output: html_document
+---
+Summary
+
+This study explores data from the Weight Lifting Exercises Dataset (Velloso, E; Bulling, A; Gellersen, H; Ugulino, W; Fuks, H.  Qualitative Activity Recognition of Weight Lifting Exercises.  Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).  Stuttgart, Germany:  ACM SIGCHI, 2013).  The purpose is to see whether common mistakes in execution of weightlifting exercises can be identified from instantaneous measurements from sensors placed on the body.
+
+The data is divided into a training and a hold out testing set of data. A model is developed on the training set of sensor measurements to try to predict the "classe" (A-E) of the exercise being done, A being correct execution, B-E various common faults.  The model is evaluated on the hold out testing set to estimate out of sample error.  The resultant final model is then applied to a small testing set for final evaluation.
+
+The aim is to achieve around 95% out of sample accuracy on the hold out set.  The first model tried is a simple tree using the "rpart" method.  This achieves an in-sample accuracy of around 50% and is not good enough (random allocation would achieve around 20%).  A more complex random forests model is then fitted, which achieves 100% in sample accuracy and, when tested on the more appropriate hold out sample, achieves an out of sample accuracy of 97.2%, which is the expected accuracy on new data of similar type.
+
+
+Reading in an Pre-processing the data.
+
+First the required data and analysis and presentation libraries are read in and loaded.  The training data is split into a training set (70%) and a hold out set, for later cross validation.  The dimensions are printed out for reference.
+
+```{r}
+library(caret)
+library(ggplot2)
+library(rattle)
+```
+
+```{r,cache=TRUE}
+d<-read.csv(file="pml-training.csv",sep=",",head=TRUE)
+dt<-read.csv(file="pml-testing.csv",sep=",",head=TRUE)
+
+set.seed(4538)
+inTrain<-createDataPartition(y=d$classe,p=0.7,list=FALSE)
+dtrain<-d[inTrain,]
+dhold<-d[-inTrain,]
+dim(dtrain); dim(dhold)
+```
+For this set of data, it is possible to use the cvtd-timestamp and user-name variables to uniquely determine the variable of interest, classe. See chart below. Classification could be done visually, or by a method such as Adaboost.  However this is hardly within the spirit of what is intended here ("using data from accelerometers") and whilst it might be effective within the test set of data used here would have no wider applicability whatsoever. It is not therefore considered further. 
+
+```{r}
+qplot(user_name,cvtd_timestamp,colour=classe,data=dtrain)
+```
+
+Of the 160 variables, 152 relate to data from accelerometers.  Of these, only 52 are present in most records.  The other 100 are calculated (mostly) each time the variable "new window" shows "yes" (about 400 of the 20000 rows of data) and are not present in the samples in the test set, so of no use for prediction here.  Further analysis is confined to these variables.
+
+```{r,cache=TRUE}
+keep<-grep("^roll|^pitch|^yaw|^total|^gy|^acc|^mag|^clas",names(d))
+keep
+dtrain1<-data.frame(dtrain[,keep])
+dhold1<-data.frame(dhold[,keep])
+dtest1<-data.frame(dt[,keep])
+dim(dtrain1); dim(dhold1); dim(dtest1)
+```
+
+The outcome variable (classe) is a factor, so one of the tree based models may be most appropriate.  Initially have 52 potential variables, which is likely to prove time consuming to fit, using one of the better tree based methods such as random forests.  Therefore see if it is possible to reduce the dimensionality. Do any of the variables exhibit minimal variation between the classe values, so that they are unlikely to be useful for discriminating?
+
+```{r,cache=TRUE}
+f<-numeric(length=52)
+for (i in 1:52){
+a<-anova(lm(dtrain1[,i]~dtrain1[,53]))
+f[i]<-a$"F value"[1]}
+df<-data.frame(f,names(dtrain1)[-53])
+df
+```
+
+A histogram of the F (variance ratio) values from comparing within and between classe variation shows that there are 17 variables which have F>100 and which distinguish best between the classe values.  These are selected for initial exploration.  The charts below show the pattern of values for a variable which does, and one which does not, exhibit variation, illustrating the point of removing the latter, as they appear to have less potential for discriminatory power.
+
+```{r}
+hist(f)
+inde<-c(1:13737)
+qplot(dtrain$magnet_belt_y,inde,col=dtrain$classe)
+qplot(dtrain$gyros_arm_x,inde,col=dtrain$classe)
+keep1<-(f>100); keep1<-c(keep1,TRUE)
+dtrain2<-dtrain1[,keep1]
+dhold2<-dhold1[,keep1]
+dtest2<-dtest1[,keep1]
+dim(dtrain2); dim(dhold2); dim(dtest2)
+```
+
+Now initially use a simple tree model on the training set dtest2, which has been reduced to 17 variables by the process above.
+
+```{r}
+set.seed(4432)
+modFit1<-train(classe~.,data=dtrain2,method="rpart")
+rpartfit<-predict(modFit1,newdata=dtrain2)
+confusionMatrix(dtrain2$classe,rpartfit)
+```
+
+This model has, even on the training set, accuracy of only around 50%, so not good enough.  Now try a more complex random forest model on the training set.  The training control parameters used  are to improve speed of fitting and are informed by exchanges on the discussion fora.
+
+```{r,cache=TRUE}
+set.seed(5391)
+modFit<-train(classe~.,data=dtrain2,method="rf",trControl=trainControl(method="cv",number=3))
+```
+
+Now calculate the in sample accuracy using the training data and the out-of-sample accuracy using the reserved cross-validation data.
+
+```{r}
+trainfittedvals<-predict(modFit,newdata=dtrain2)
+holdfittedvals<-predict(modFit,newdata=dhold2)
+confusionMatrix(dtrain2$classe,trainfittedvals)
+confusionMatrix(dhold2$classe,holdfittedvals)
+```
+In-sample accuracy on the training data is 100%.  Out of sample accuracy estimate is around 97.2%.  This high value gives some reassurance against overfitting.
+
+Make predictions using the final test data;  the predictions are listed in order for cases 1 to 20.
+```{r}
+finalfit<-predict(modFit,newdata=dtest2)
+finalfit<-as.character(finalfit)
+finalfit
+```
+
+Create and use the recommended function to output these predictions for the 20 test cases for submission.
+
+```{r}
+pml_write_files<-function(x){
+  n<-length(x)
+  for(i in 1:n){
+    filename<-paste0("problem_id_",i,".txt")
+    write.table(x[i],file=filename,quote=FALSE,row.names=FALSE,col.names=FALSE)
+    }
+  }
+pml_write_files(finalfit)
+```
